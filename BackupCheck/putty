@@ -1,0 +1,4 @@
+#!/bin/bash
+puttyexe="/root/.wine/drive_c/Program Files/PuTTY/putty.exe"
+wine "$puttyexe" $*
+

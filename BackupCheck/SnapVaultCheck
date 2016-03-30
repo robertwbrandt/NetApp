@@ -1,0 +1,75 @@
+#!/bin/bash
+
+sshcommand="/opt/opw/BackupCheck/plinkyes -l snapview -pw snapview"
+host="opw-filervault"
+set smtp="smtp.opw.ie"
+from="snapvaultcheck@opw.ie"
+to="storagealerts@opw.ie"
+
+ignorevolumes="/vol/SM_OSSV_limerick/
+               /vol/SV_.*_old/
+               /vol/SM_.*_old/
+               /vol/SM_.*_32/"
+
+
+workday() {
+	# Verify it is not the Mon-Fri during working hours.
+	dayofweek=$( date +%a )
+	hourofday=$( date +%H )
+
+	if [ "$dayofweek" != "Sat" ] && [ "$dayofweek" != "Sun" ]; then
+		if [ "$hourofday" -lt "08" ] || [ "$hourofday" -gt "17" ]; then
+			return 1
+		fi
+	fi
+	return 0
+}
+
+gettimelimit() {
+	dayofweek=$( date +%a )
+	timelimit=$(( 24 + 4 ))
+	[ "$dayofweek" == "Mon" ] && timelimit=$(( 24 + $timelimit ))
+	echo $timelimit
+}
+
+initiateUpdate() {
+	qtree="$1"
+	hour="$2"
+	timelimit="$3"
+	runhistory="$4"
+
+	logmsg="Skipping the Qtree $host:$qtree update ($hour hours out of date) because the Qtree is busy with another update."
+	test -z "$runhistory" && logmsg="Updating the Qtree $host:$qtree which is $hour hours out of date."
+	logger -s -t "SnapVaultUpdate" $logmsg
+
+	if [ -z "$runhistory" ]; then
+		echo -e "$logmsg\n(All relationships greater than $timelimit hours old will try to be updated)" | mailx -s "Automatic Snapvault Update - $qtree" -r $from $to
+		$sshcommand $host "snapvault update $qtree"
+	fi
+}
+
+if ! workday
+then
+	timelimit=$( gettimelimit )
+	echo -e "Time Limit is set to $timelimit"
+	echo -e "Running Command:\n$sshcommand $host \"snapvault status\""
+
+	BackupInfo=$( $sshcommand $host "snapvault status" | grep "Snapvaulted.*Idle" )
+	for ignore in $( echo -n "$ignorevolumes"| tr -s "[:space:]" " " )
+	do
+		BackupInfo=$( echo "$BackupInfo" | grep -v "$ignore" )
+	done
+	RunHistory=""
+
+	for line in $( echo "$BackupInfo" | sed -e "s|\s*Idle|\n|g" -e "s|\s*Snapvaulted\s*|:|g" | sed -e "s|.*$host:||g" )
+	do
+		location=$( echo "$line" | cut -d ":" -f 1 )
+		hour=$( echo "$line" | cut -d ":" -f 2 )
+		volume=$( echo "$location" | cut -d "/" -f 3 )
+		if [ "$hour" -gt "$timelimit" ]; then
+			initiateUpdate "$location" "$hour" "$timelimit" $( echo "$RunHistory" | grep "$volume" )
+			RunHistory="$RunHistory,$volume"
+		fi
+	done
+fi
+

@@ -1,0 +1,26 @@
+#!/bin/bash
+
+expectscript() {
+	HOST="$1"
+	PASSWORD="$2"
+	echo "spawn ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@$HOST date $(date +%Y%m%d%H%M.%S)"
+	echo "expect  \"password:\" { send \"$PASSWORD\\n\"}"
+	echo "expect \"done\""
+}
+
+UpdateTime() {
+	HOST="$1"
+	PASSWORD="$2"
+
+	logger -s -t "NetAppTimeSync" "Updating the time on $HOST."
+	expectscript "$HOST" "$PASSWORD" | /usr/bin/expect
+	echo -e "\n"
+}
+
+UpdateTime "opw-filer01.opw.ie" "D0n'tused00r5nt"
+UpdateTime "opw-filer02.opw.ie" "D0n'tused00r5nt"
+UpdateTime "opw-filer03.opw.ie" "D0n'tused00r5nt"
+UpdateTime "opw-filer04.opw.ie" "D0n'tused00r5nt"
+UpdateTime "opw-filer05.opw.ie" "D0n'tused00r5nt"
+UpdateTime "opw-filervault.opw.ie" "D0n'tused00r5nt"
+

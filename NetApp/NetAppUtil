@@ -1,0 +1,106 @@
+#!/bin/sh
+#
+#     Script utility for NetApp filers
+#     Bob Brandt <projects@brandt.ie>
+#          
+#
+
+smtp="smtp.opw.ie"
+from="snapvaultcheck@opw.ie"
+to="storagealerts@opw.ie"
+#to="bob.brandt@opw.ie"
+
+ignorevolumes="/vol/SV_.*_old/
+               /vol/SM_.*_old/
+               /vol/SM_.*_32/
+               /vol/SM_OSSV_limerick/"
+
+SnapvaultHistoryLog="/opt/opw/NetApp/.snapvaulthistory"
+
+usage() {
+	echo -e "Usage: $0 [--timesync filer] [--snapvault filer [force]] [--mail [force]]"
+	echo -e "  -t, --timesync   Update the time on a given filer"
+	echo -e "  -s, --snapvault  Update the snapvault relationships on a given filer (Only out of hours unless force is used)"
+	echo -e "  -m, --mail       Mail the Snapvault Update log (Only during work hours unless force is used)"
+	echo -e "  -h, --help         Show this help message."
+	exit ${1-0}
+}
+
+workday() {
+	# Verify it is not the Mon-Fri during working hours.
+	dayofweek=$( date +%a )
+	hourofday=$( date +%H )
+
+	if [ "$dayofweek" != "Sat" ] && [ "$dayofweek" != "Sun" ]; then
+		if [ "$hourofday" -lt "08" ] || [ "$hourofday" -gt "17" ]; then
+			return 1
+		fi
+	fi
+	return 0
+}
+
+# On Monday, extend the timelimit by an extra 24 hours
+gettimelimit() { timelimit=$(( 24 + 4 )) ; [ "$( date +%a )" == "Mon" ] && timelimit=$(( 24 + $timelimit )) ; echo $timelimit ; }
+
+# Check for rsh access
+verifyrshaccess() { rsh "$1" version || ( echo "Please ensure that rsh access is allowed for this server ($1) and user in /etc/hosts.equiv" 2>&1 ; exit 1 ) ; }
+
+# Update the datetime
+timesync() {
+	filer="$1"
+	verifyrshaccess "$filer"
+	rsh "$filer" "date $(date +%Y%m%d%H%M.%S)" && logger -s -t "NetAppUtil" "Updating the time on $filer."
+}
+
+# Update the Snapvault relationship
+SnapvaultUpdate() {
+	filer="$1"
+	qtree="$2"
+	hour="$3"
+	timelimit="$4"
+
+	logmsg="Updating the Qtree $filer:$qtree which is $hour hours out of date."
+	rsh $filer "snapvault update $qtree" && logger -s -t "SnapVaultUpdate" $logmsg && echo -e "$( date '+%F %H:%M' ): $logmsg (older than $timelimit hours)" >> "$SnapvaultHistoryLog"
+}
+
+# Check all the Snapvault relationships
+SnapvaultCheck() {
+	filer="$1"
+	verifyrshaccess "$filer"
+
+	timelimit=$( gettimelimit )
+	echo -e "Time Limit is set to $timelimit hours."
+	echo -e "Running Command: rsh $filer \"snapvault status\""
+
+	BackupInfo=$( rsh $filer "snapvault status" | grep "Snapvaulted.*Idle" )
+	for ignore in $( echo -n "$ignorevolumes"| tr -s "[:space:]" " " )
+	do
+		BackupInfo=$( echo "$BackupInfo" | grep -v "$ignore" )
+	done
+
+	for line in $( echo "$BackupInfo" | sed -e "s|\s*Idle|\n|g" -e "s|\s*Snapvaulted\s*|:|g" | sed -e "s|.*$filer:||g" )
+	do
+		location=$( echo "$line" | cut -d ":" -f 1 )
+		hour=$( echo "$line" | cut -d ":" -f 2 )
+		volume=$( echo "$location" | cut -d "/" -f 3 )
+		if [ "$hour" -gt "$timelimit" ]; then
+			SnapvaultUpdate "$filer" "$location" "$hour" "$timelimit"
+		fi
+	done
+}
+
+SendSnapvaultHistory() {
+	test -f "$SnapvaultHistoryLog" && cat "$SnapvaultHistoryLog" | mailx -s "Automatic Snapvault Update" -r "$from" "$to" && rm "$SnapvaultHistoryLog"
+}
+
+
+case "$1" in
+    -h | --help)	usage 0 ;;
+    -t | --timesync)	timesync "$2" ;;
+    -s | --snapvault)	( test -n "$3" || ! workday ) && SnapvaultCheck "$2" ;;
+    -m | --mail)	( test -n "$2" || workday ) && SendSnapvaultHistory ;;
+    *)			usage 1 ;;
+esac
+exit $?
+
+

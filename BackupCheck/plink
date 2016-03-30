@@ -1,0 +1,4 @@
+#!/bin/bash
+plinkexe="/root/.wine/drive_c/Program Files/PuTTY/plink.exe"
+wine "$plinkexe" $*
+
