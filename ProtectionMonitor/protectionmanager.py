@@ -9,7 +9,7 @@ Python script to Monitor NetApp SnapMirror Information
 #  security login publickey create -vserver sg200-ntap-svm -username snapvault -index 0 -publickey "ssh-rsa contents_of_public_key_here="
 
 
-import argparse, textwrap, fnmatch, datetime
+import argparse, textwrap, fnmatch, datetime, copy
 import xml.etree.cElementTree as ElementTree
 import subprocess
 
@@ -22,11 +22,11 @@ sys.path.pop()
 
 version = 0.3
 args = {}
-args['cluster'] = True
-args['test'] = False
-args['output'] = 'text'
-args['encoding'] = 'utf-8'
+args['cluster'] = []
+args['7mode'] = []
 args['hosts'] = []
+args['test'] = False
+args['encoding'] = 'utf-8'
 
 class customUsageVersion(argparse.Action):
   def __init__(self, option_strings, dest, **kwargs):
@@ -53,17 +53,16 @@ class customUsageVersion(argparse.Action):
       print textwrap.fill(version, self.__row)
       print "\nWritten by Bob Brandt <projects@brandt.ie>."
     else:
-      print "Usage: " + self.__prog + " [options] [hosts]"
+      print "Usage: " + self.__prog + " [options]"
       print "Script o Monitor NetApp SnapMirror Information.\n"
       print "Options:"
       options = []
-      options.append(("-h, --help",            "Show this help message and exit"))
-      options.append(("-v, --version",         "Show program's version number and exit"))
-      options.append(("-o, --output OUTPUT",   "Type of output {text | csv | xml}"))
-      options.append(("-c, --cluster",         "Operate in Cluster-mode"))
-      options.append(("-7, --7mode",           "Operate in 7-mode (DFM)"))
-      options.append(("-t, --test",            "Test SSH access to the hosts"))
-      options.append(("hosts",                 "List of hosts."))
+      options.append(("-h, --help",           "Show this help message and exit"))
+      options.append(("-v, --version",        "Show program's version number and exit"))
+      options.append(("-c, --cluster hosts",  "Operate in Cluster-mode"))
+      options.append(("-7, --7mode hosts",    "Operate in 7-mode (DFM)"))
+      options.append(("-t, --test",           "Test SSH access to the hosts"))
+      options.append(("hosts",                "List of hosts."))
       length = max( [ len(option[0]) for option in options ] )
       for option in options:
         description = textwrap.wrap(option[1], (self.__row - length - 5))
@@ -75,39 +74,37 @@ def command_line_args():
   parser = argparse.ArgumentParser(add_help=False)
   parser.add_argument('-v', '--version', action=customUsageVersion, version=version, max=80)
   parser.add_argument('-h', '--help', action=customUsageVersion)
-  parser.add_argument('-o', '--output',
-          required=False,
-          default=args['output'],
-          choices=['text', 'csv', 'xml'],
-          help="Display output type.")
-  parser.add_argument('-c', '--cluster',
-          action='store_true',
-          default=args['cluster'],
-          required=False,
-          dest='cluster',
-          help="Operate in Cluster-mode")
-  parser.add_argument('-7', '--7mode',
-          action='store_false',
-          default=args['cluster'],          
-          required=False,
-          dest='cluster',
-          help="Operate in 7-mode (DFM)")
   parser.add_argument('-t', '--test',
           action='store_true',    
           required=False,
-          help="Test SSH access to the hosts")  
+          default=args["test"],
+          help="Test SSH access to the hosts")
+  parser.add_argument('-c', '--cluster',
+          type=str,
+          nargs='+',
+          required=False,
+          default=args["cluster"],          
+          help="Operate in Cluster-mode")
+  parser.add_argument('-7', '--7mode',
+          type=str,
+          nargs='+',
+          required=False,
+          default=args["7mode"],          
+          help="Operate in 7-mode (DFM)")
   parser.add_argument('hosts',
           nargs='*',
-          default= args['hosts'],
           action='store',
+          default=args["hosts"],
           help="List of hosts.")
   args.update(vars(parser.parse_args()))
 
 
-def test_hosts(hosts):
+def test_hosts(_clusterhosts,_7modehosts):
   print "Host\t\tPing\tSSH"
-  failed=[]
-  for host in hosts:
+  failed={"cluster":[],"7mode":[]}
+
+  # Check Clustered Hosts  
+  for host in _clusterhosts:
     _cmd = '/bin/ping -c 1 ' + str(host)
     p = subprocess.Popen([ _cmd ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
     out, err = p.communicate()
@@ -120,28 +117,50 @@ def test_hosts(hosts):
       out, err = p.communicate()
       sshable = (p.returncode == 0)
     print str(host) + "\t" + str(pingable) + "\t" +str(sshable)
+    if not pingable or not sshable: failed["cluster"].append(host)
 
-    if not pingable or not sshable: failed.append(host)
+  # Check 7mode DFM hosts
+  for host in _7modehosts:
+    _cmd = '/bin/ping -c 1 ' + str(host)
+    p = subprocess.Popen([ _cmd ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+    out, err = p.communicate()
+    pingable = (p.returncode == 0)
+    sshable = False
 
-    if failed:
-      _cmd = 'cat "$HOME/.ssh/id_rsa.pub"'
+    if pingable:
+      _cmd = "ssh -l snapvault " + str(host) + ' "dfm version"'
       p = subprocess.Popen([ _cmd ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
       out, err = p.communicate()
-      if p.returncode != 0:
-        sys.stderr.write( "Unable to find SSH PublicKey (~/.ssh/id_rsa.pub)!\n" )
-        sys.exit(1)
-      _publickey = " ".join(out.split(" ")[:2])
-      for fail in failed:
-        print "\nHost " + str(fail) + " failed! Be sure to:"
-        print "Verify you can run the command: ssh -l snapvault " + str(fail) + ' "version"'
-        print "On the host, run the commands:"
-        print str(fail) + "::> security login create -user-or-group-name snapvault -vserver " + str(fail) + " -application ssh -authentication-method publickey -role vsadmin-backup"
-        print str(fail) + '::> security login publickey create -vserver ' + str(fail) + ' -username snapvault -index 0 -publickey "' + str(_publickey) + '"'
-        print
+      sshable = (p.returncode == 0)
+    print str(host) + "\t" + str(pingable) + "\t" +str(sshable)
+    if not pingable or not sshable: failed["7mode"].append(host)
 
-  return len(failed)
+  # Tell user about the Failed hosts
+  if failed["cluster"]:
+    _cmd = 'cat "$HOME/.ssh/id_rsa.pub"'
+    p = subprocess.Popen([ _cmd ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+    out, err = p.communicate()
+    if p.returncode != 0:
+      sys.stderr.write( "Unable to find SSH PublicKey (~/.ssh/id_rsa.pub)!\n" )
+      sys.exit(1)
+    _publickey = " ".join(out.split(" ")[:2])
+    for fail in failed:
+      print "\nHost " + str(fail) + " failed! Be sure to:"
+      print "Verify you can run the command: ssh -l snapvault " + str(fail) + ' "version"'
+      print "On the host, run the commands:"
+      print str(fail) + "::> security login create -user-or-group-name snapvault -vserver " + str(fail) + " -application ssh -authentication-method publickey -role vsadmin-backup"
+      print str(fail) + '::> security login publickey create -vserver ' + str(fail) + ' -username snapvault -index 0 -publickey "' + str(_publickey) + '"'
+      print
 
-def cmode_get_snapmirror_status(host):
+  for fail in failed["7mode"]:
+    print "\nHost " + str(fail) + " failed! Be sure to:"
+    print "Verify you can run the command: ssh -l snapvault " + str(fail) + ' "dfm version"'
+    print "If not, run the command: ssh-copy-id -n snapvault@" + str(fail)
+    print
+
+  return len(failed["cluster"]) + len(failed["7mode"])
+
+def get_cmode_snapmirror_status(host):
   _volumes = {}
 
   _cmd = 'ssh -l snapvault ' + str(host) + ' "rows 0; snapmirror show -fields source-path,type,destination-path,state,status,lag-time"'
@@ -194,21 +213,94 @@ def cmode_get_snapmirror_status(host):
   return _volumes
 
 
+def superstrip(s):
+  s = str(s).strip()
+  if s and s[0] in "\"'" and s[0] == s[-1]: s = s[1:-1].strip()
+  return s
+
+# Copyright Ferry Boender, released under the MIT license.
+# https://www.electricmonk.nl/log/2017/05/07/merging-two-python-dictionaries-by-deep-updating/
+def deepupdate(target, src):
+  for k, v in src.items():
+    if type(v) == list:
+      if not k in target:
+        target[k] = copy.deepcopy(v)
+      else:
+        target[k].extend(v)
+    elif type(v) == dict:
+      if not k in target:
+        target[k] = copy.deepcopy(v)
+      else:
+        deepupdate(target[k], v)
+    elif type(v) == set:
+      if not k in target:
+        target[k] = v.copy()
+      else:
+        target[k].update(v.copy())
+    else:
+      target[k] = copy.copy(v)
+
+
+def DFMPerl2Dict(PerlString):
+  _dict={}
+  for line in [ superstrip(x) for x in str(PerlString).split('\n') ]:
+    if line and line[0] == '$' and line[-1] == ';':
+      line, data = [ str(x).strip() for x in line[1:-1].split('=',1) ]
+
+      if data and data[0] in "\"'" and data[0] == data[-1]: data = data[1:-1]
+      line = [ superstrip(x) for x in "".join(line.split("}")).split("{") ]
+
+      tmp = data
+      for entry in line[::-1]:
+        tmp = {entry:tmp}
+      deepupdate(_dict, tmp)
+
+  return _dict
+
+
+def get_7mode_snapmirror_status(host):
+  _relationships = {}
+  _datasets = {}
+
+  _cmd = 'ssh -l snapvault ' + str(host) + ' "dfpm relationship list -F perl"'
+  p = subprocess.Popen([ _cmd ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+  out, err = p.communicate()
+  if p.returncode == 0:
+    _relationships = DFMPerl2Dict(out)
+
+  _cmd = 'ssh -l snapvault ' + str(host) + ' "dfpm dataset list -F perl"'
+  p = subprocess.Popen([ _cmd ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+  out, err = p.communicate()
+  if p.returncode == 0:
+    _datasets = DFMPerl2Dict(out)
+
+  for dataset in _datasets["datasets"]:
+    print _datasets["datasets"][dataset]
+
+
+
 # Start program
 if __name__ == "__main__":
   command_line_args()
 
-  if not args['hosts']:
-    sys.stderr.write( "You failed to include a host!\n" )
-    sys.exit(1)
+  if args['hosts']:
+    args['cluster'] += args['hosts']
+    args['hosts'] = []
 
-  if args['test']: sys.exit( test_hosts(args['hosts']) )
+  if (len(args["cluster"]) + len(args["7mode"])) < 1:
+    sys.stderr.write( "You must specify at least 1 host!\n" )
+    sys.exit(1)    
 
+  if args['test']: sys.exit( test_hosts(args['cluster'],args['7mode']) )
+
+  _return = {}
   if args['cluster']:
-    for host in args['hosts']:
-      sm_data = cmode_get_snapmirror_status(host)
-      for line in sm_data:
-        print line, sm_data[line]
+    _return["cluster"] = {}
+    for host in args['cluster']:
+      _return["cluster"][host] = get_cmode_snapmirror_status(host)
   else:
-    for host in args['hosts']:
-      print "DFM Host: " + str(host)
+    _return["7mode"] = {}    
+    for host in args['7mode']:
+      _return["7mode"][host] = get_7mode_snapmirror_status(host)
+
+  print _return
