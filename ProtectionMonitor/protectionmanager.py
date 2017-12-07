@@ -98,6 +98,70 @@ def command_line_args():
           help="List of hosts.")
   args.update(vars(parser.parse_args()))
 
+# Copyright Ferry Boender, released under the MIT license.
+# https://www.electricmonk.nl/log/2017/05/07/merging-two-python-dictionaries-by-deep-updating/
+def deepupdate(target, src):
+  for k, v in src.items():
+    if type(v) == list:
+      if not k in target:
+        target[k] = copy.deepcopy(v)
+      else:
+        target[k].extend(v)
+    elif type(v) == dict:
+      if not k in target:
+        target[k] = copy.deepcopy(v)
+      else:
+        deepupdate(target[k], v)
+    elif type(v) == set:
+      if not k in target:
+        target[k] = v.copy()
+      else:
+        target[k].update(v.copy())
+    else:
+      target[k] = copy.copy(v)
+
+def DFMPerl2Dict(PerlString):
+  """
+  Convert DFM's Perl output to a Python dictionary
+  """
+  _dict={}
+  for _line in [ superstrip(x) for x in str(PerlString).split('\n') ]:
+    if _line and _line[0] == '$' and _line[-1] == ';':
+      _line, _data = [ str(x).strip() for x in _line[1:-1].split('=',1) ]
+
+      if _data and _data[0] in "\"'" and _data[0] == _data[-1]: _data = _data[1:-1]
+      _line = [ superstrip(x) for x in "".join(_line.split("}")).split("{") ]
+
+      _tmp = _data
+      for _entry in line[::-1]:
+        _tmp = {_entry:_tmp}
+      deepupdate(_dict, _tmp)
+  return _dict
+
+def NetAppTable2Dict(String, Headers = None):
+  """
+  Convert NetApp's text tables to a Python dictionary
+  Headers is a list containing the list with Name of the Headers and the number of spaces in each field.
+  i.e. [ ["name",0], ["date",4], ["other",0] ]
+  If blank, it will use the first row as a template and assume 0 spaces per field
+  """
+  _dict={}
+  if String:
+    if not Headers:
+      _tmp, String = String.spilt("\n",1)[0]
+      _tmp = _tmp.split()
+      Headers = [ (x,0) for x in _tmp ]
+
+    _data = [x for x in String.split("\n")[1:] if x.strip() and x.strip()[0].isalnum() ]
+
+    for _line in _data:
+      _tmp = {}
+      for x in range(len(Headers)):
+        if not _line: break
+        _tmp[Headers[x][0]], _line = _line[x].split(None,Headers[x][1])
+        
+    _dict.update(_tmp)
+  return _dict
 
 def test_hosts(_clusterhosts,_7modehosts):
   print "Host\t\tPing\tSSH"
@@ -218,49 +282,12 @@ def superstrip(s):
   if s and s[0] in "\"'" and s[0] == s[-1]: s = s[1:-1].strip()
   return s
 
-# Copyright Ferry Boender, released under the MIT license.
-# https://www.electricmonk.nl/log/2017/05/07/merging-two-python-dictionaries-by-deep-updating/
-def deepupdate(target, src):
-  for k, v in src.items():
-    if type(v) == list:
-      if not k in target:
-        target[k] = copy.deepcopy(v)
-      else:
-        target[k].extend(v)
-    elif type(v) == dict:
-      if not k in target:
-        target[k] = copy.deepcopy(v)
-      else:
-        deepupdate(target[k], v)
-    elif type(v) == set:
-      if not k in target:
-        target[k] = v.copy()
-      else:
-        target[k].update(v.copy())
-    else:
-      target[k] = copy.copy(v)
-
-
-def DFMPerl2Dict(PerlString):
-  _dict={}
-  for line in [ superstrip(x) for x in str(PerlString).split('\n') ]:
-    if line and line[0] == '$' and line[-1] == ';':
-      line, data = [ str(x).strip() for x in line[1:-1].split('=',1) ]
-
-      if data and data[0] in "\"'" and data[0] == data[-1]: data = data[1:-1]
-      line = [ superstrip(x) for x in "".join(line.split("}")).split("{") ]
-
-      tmp = data
-      for entry in line[::-1]:
-        tmp = {entry:tmp}
-      deepupdate(_dict, tmp)
-
-  return _dict
 
 
 def get_7mode_snapmirror_status(host):
   _relationships = {}
   _datasets = {}
+  _backups = {}
 
   _cmd = 'ssh -l snapvault ' + str(host) + ' "dfpm relationship list -F perl"'
   p = subprocess.Popen([ _cmd ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
@@ -273,6 +300,15 @@ def get_7mode_snapmirror_status(host):
   out, err = p.communicate()
   if p.returncode == 0:
     _datasets = DFMPerl2Dict(out)
+
+  _cmd = 'ssh -l snapvault ' + str(host) + ' "dfpm backup list"'
+  p = subprocess.Popen([ _cmd ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+  out, err = p.communicate()
+  if p.returncode == 0:
+    _datasets = DFMPerl2Dict(out)
+
+
+
 
   for dataset in _datasets["datasets"]:
     print _datasets["datasets"][dataset]
